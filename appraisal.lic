@@ -154,7 +154,7 @@ class Appraisal
   end
 
   def appraise_focus(item)
-    focus_concepts = ["defense", "arcane", "recall", "logic", "offense", "magic", "khri", "inner fire"]
+    focus_concepts = ["defense", "arcane", "recall", "logic", "offense", "magic", "khri", "inner fire", "north", "south", "east", "west", "northwest", "southwest", "northeast", "southeast"]
     if focus_concepts.include?(item)
       focus_concept(item)
     else
