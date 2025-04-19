@@ -4848,7 +4848,7 @@ class GameState
     return false unless npcs.any?
     return false unless charged_maneuver_off_cooldown?(@charged_maneuvers['Shield Usage'])
 
-    wield_specific_weapon(@rush_shield, nil, false)
+    wield_specific_weapon(@rush_shield, 'Shield Usage', false)
     maneuver_success = case DRC.bput("maneuver rush",
                                      /^You angle your .* towards .* and charge forwards/,
                                      /^You are already engaged/,
