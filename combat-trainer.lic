@@ -4852,6 +4852,7 @@ class GameState
     maneuver_success = case DRC.bput("maneuver rush",
                                      /^You angle your .* towards .* and charge forwards/,
                                      /^You are already engaged/,
+                                     /is already engaged to you/,
                                      /^You are unable to focus on performing a maneuver while aiming at an enemy/,
                                      /^There is nothing else to face/,
                                      /^You must rest a bit longer before attempting/)
@@ -4863,7 +4864,7 @@ class GameState
                        when /You are unable to focus on performing a maneuver while aiming at an enemy/
                          @cooldown_timers['rush'] += 15 # If we happen to try to engage while aiming, don't retry immediately
                          false
-                       when /You are already engaged/ # already at melee
+                       when /You are already engaged/, /is already engaged to you/ # already at melee
                          true
                        when /^You angle your .* towards .* and charge forwards/
                          if Flags['ct-maneuver-cooldown-reduced'] && DRStats.paladin?
