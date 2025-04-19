@@ -4876,7 +4876,7 @@ class GameState
                          true
                        end
 
-    DRCI.wear_item?(@rush_shield)
+    @equipment_manager.stow_weapon(@rush_shield)
     return maneuver_success
   end
 
