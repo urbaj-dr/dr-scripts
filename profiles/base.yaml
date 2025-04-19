@@ -177,6 +177,7 @@ charged_maneuvers:
   Staves: twirl
   Polearms: impale
   Dual Wield: doublestrike
+  Shield Usage: rush
 
 # If "Charged Maneuver" is set in your training_abilities, this setting
 # will attempt doublestrikes by temporarily wielding a "doublestrike trainable"
@@ -234,6 +235,9 @@ stomp_to_engage: false
 pounce_on_cooldown: false
 # Toggle use of Pounce to engage (when it is available)
 pounce_to_engage: false
+
+# Define a worn shield to Rush to engage. It should match the name provided in your gear.
+rush_shield:
 
 # Defines the number of monsters you will keep in combat with you by performing 'dance actions' or attacking with only 'harmless: true' spells. 0 means kill everything.
 dance_threshold: 0
