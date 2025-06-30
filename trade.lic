@@ -111,7 +111,7 @@ class Trade
     @times_engineering = 0
     @task_status = nil
     @task_finish_time = Time.now - 3600
-    @use_tasks = @settings.trade_tasks || true
+    @use_tasks = @settings.trade_tasks
 
     @box = @settings.picking_lockbox
     @worn_lockbox = @settings.picking_worn_lockbox
