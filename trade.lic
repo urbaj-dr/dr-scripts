@@ -1136,7 +1136,7 @@ class Trade
   def check_task
     return unless @use_tasks
     if @task_status.nil?
-      case DRC.bput('task', 'The clerks responsible for assigning contracts across the Trade routes of ','You are not currently on a task')
+      case DRC.bput('task', 'The clerks responsible for assigning contracts across the Trade routes of ', 'You are not currently on a task')
       when 'The clerks responsible for assigning contracts across the Trade routes of '
         @task_status = 'active'
       else
@@ -1145,13 +1145,13 @@ class Trade
     end
     
     finish_task if Flags['trade-task']
-    get_task if @task_status == 'inactive' && Time.now - @task_finish_time >= 1200 
+    get_task if @task_status == 'inactive' && Time.now - @task_finish_time >= 1200
   end
   
   def finish_task
     Flags.reset('trade-task')
     DRCT.walk_to(find_closest_id('shipment_clerk'))
-    DRC.bput('ask clerk about task finish','clerk hands you')
+    DRC.bput('ask clerk about task finish', 'clerk hands you')
     @task_status = 'inactive'
     @task_finish_time = Time.now()
     check_task unless @closeup
@@ -1161,13 +1161,12 @@ class Trade
     DRCT.walk_to(find_closest_id('shipment_clerk'))
     @task_status = 'active'
     Flags.reset('trade-task')
-    case DRC.bput('ask clerk for task', 'You may accept by typing ACCEPT TASK, or decline by typing DECLINE TASK', 'You are already on a task','Thanks for your willingness','I am sorry, you must wait before I can give you a task')
+    case DRC.bput('ask clerk for task', 'You may accept by typing ACCEPT TASK, or decline by typing DECLINE TASK', 'You are already on a task', 'Thanks for your willingness', 'I am sorry, you must wait before I can give you a task')
     when 'You may accept by typing ACCEPT TASK, or decline by typing DECLINE TASK'
-      DRC.bput('accept task','clerk exclaims,')
+      DRC.bput('accept task', 'clerk exclaims,')
     when 'Thanks for your willingness', 'I am sorry, you must wait before I can give you a task'
       @task_status = 'inactive'
     end
-    
   end
 
   def get_contract
