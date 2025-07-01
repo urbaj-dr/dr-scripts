@@ -1143,11 +1143,10 @@ class Trade
         @task_status = 'inactive'
       end
     end
-    
     finish_task if Flags['trade-task']
     get_task if @task_status == 'inactive' && Time.now - @task_finish_time >= 1200
   end
-  
+
   def finish_task
     Flags.reset('trade-task')
     DRCT.walk_to(find_closest_id('shipment_clerk'))
