@@ -152,11 +152,11 @@ class Enchant
   def imbue
     imbue_data = @settings['waggle_sets']['imbue']['Imbue']
     if imbue_data
+      DRC.bput('prepare symbiosis', 'You recall the exact details of the', 'But you\'ve already prepared', 'Please don\'t do that here')
+      DRC.bput('release symbiosis', "But you haven't", 'You release', 'Repeat this command')
       if XMLData.prepared_spell
         DRC.bput('release spell', 'You let your concentration lapse', "You aren't preparing a spell")
         DRC.bput('release mana', 'You release all', "You aren't harnessing any mana")
-        DRC.bput('prepare symbiosis', 'You recall the exact details of the', 'But you\'ve already prepared', 'Please don\'t do that here')
-        DRC.bput('release symbiosis', "But you haven't", 'You release', 'Repeat this command')
 	    end
       imbue_data['cast'] = "cast #{@item} on #{@brazier}"
       until DRCA.cast_spell?(imbue_data, @settings)
