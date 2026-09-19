@@ -279,7 +279,7 @@ cast_messages:
 - Tears of hot regret flow down your eyes
 - Your eyes flare with a whorl
 # Prosperity in Absentia raising a new kiosk
-- ^Your tessera grows cold
+- ^Your .+ grows cold, flickering in a complex undulating pattern
 
 khri_preps:
 - Releasing a deep breath, you focus on your ability to survive the
