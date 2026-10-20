@@ -1405,6 +1405,7 @@ module Harness
       def center_telescope(*_args); end
       def peer_telescope(*_args); []; end
       def update_astral_data(data, *_args); data; end
+      def set_moon_data(data); data; end
     end
   end
 
