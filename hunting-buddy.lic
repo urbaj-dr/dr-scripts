@@ -467,6 +467,7 @@ class HuntingBuddy
                                       when /You're not in any condition to be searching around/i
                                         DRC.message("***STATUS*** You're too injured to hunt!")
                                         @stop_hunting = true
+                                        @stop_hunting_cause = :too_injured
                                         @stopped_for_bleeding = bleeding?
                                         # Ironically, return true so the search for a suitable hunting room
                                         # stops and then the hunting buddy loop will detect that you need help
@@ -586,11 +587,18 @@ class HuntingBuddy
 
   def hunt(args, duration, stop_on_high_skills, stop_on_low_skills, stop_on_boxes, stop_on_no_moons, stop_on_encumbrance, stop_on_burgle_cooldown)
     $COMBAT_TRAINER = nil
+    @hunt_stop_reason = nil
     hunting_room = Room.current.id
 
     notify_hook(:before_hunt, self, hunting_room: hunting_room)
     hunting_room = Room.current.id # Update in case a plugin relocated us
-    return if @stop_hunting
+    if @stop_hunting
+      # Keep before_hunt/after_hunt paired for plugins even when the hunt
+      # is called off before combat-trainer starts.
+      @hunt_stop_reason = @stop_hunting_cause || :manual_stop
+      notify_hook(:after_hunt, self, hunting_room: hunting_room, counter: 0)
+      return
+    end
 
     Flags.add('hunting-buddy-familiar-drag', /^Your .+ grabs ahold of you and drags you .+, out of combat.+$/)
     Flags.add('hunting-buddy-stop-to-burgle', /^A tingling on the back of your neck draws attention to itself by disappearing, making you believe the heat is off from your last break in/)
@@ -607,7 +615,6 @@ class HuntingBuddy
     start = Time.now
     pause until Time.now - start > 30 || $COMBAT_TRAINER.running
 
-    @hunt_stop_reason = nil
     counter = 0
     loop do
       clear
