@@ -846,25 +846,125 @@ RSpec.describe HuntingBuddy do
     # Runs the room predicate hunting-buddy hands to find_empty_room, with
     # `say_echo` as the line the game sends back for our own empty-room say
     # and `heard` as anything else that arrives while we wait.
-    def room_judged_empty?(say_echo:, heard: nil)
+    def room_judged_empty?(say_echo:, heard: nil, avoid_buddies: false, pcs: [], group: [], search_finds: nil, heard_in_search: nil, arrives: nil)
       buddy.instance_variable_set(:@settings, settings)
       buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
       buddy.instance_variable_set(:@escort_zones, {})
       buddy.instance_variable_set(:@hunting_buddies_max, 2)
-      DRRoom.pcs = []
-      DRRoom.group_members = []
-      allow(DRC).to receive(:bput).with('search', any_args).and_return('Roundtime: 3 sec.')
-      allow(buddy).to receive(:reget).and_return([])
+      DRRoom.pcs = pcs
+      DRRoom.group_members = group
+      allow(DRC).to receive(:bput).with('search', any_args) do
+        deliver(heard_in_search) if heard_in_search
+        'Roundtime: 3 sec.'
+      end
+      allow(buddy).to receive(:reget).and_return(search_finds ? [search_finds, 'You search around for a moment.'].reverse : [])
+      allow(buddy).to receive(:waitrt?)
       allow(buddy).to receive(:pause)
       allow(buddy).to receive(:fput) do |command|
         next unless command.start_with?('say ')
 
         deliver(say_echo)
         deliver(heard) if heard
+        DRRoom.pcs = DRRoom.pcs + [arrives] if arrives
       end
       allow(DRCT).to receive(:find_empty_room) { |_rooms, _idle, predicate, *_rest| predicate.call(1) }
 
-      buddy.find_hunting_room?(['rats'], 851)
+      buddy.find_hunting_room?(['rats'], 851, false, avoid_buddies)
+    end
+
+    context 'with a hunting buddy (Bob)' do
+      let(:settings) do
+        OpenStruct.new(custom_hunting_zones: {}, hunting_buddies: ['Bob'], hunting_nemesis: [],
+                       empty_hunting_room_messages: ['Is anyone hunting here?'],
+                       hunting_room_min_mana: 0, hunting_room_strict_mana: false, hunting_room_max_searches: 30)
+      end
+      let(:echo) { 'You say, "Is anyone hunting here?"' }
+
+      it 'takes a room where a hidden buddy speaks up, by default' do
+        expect(room_judged_empty?(say_echo: echo, search_finds: 'You notice Bob, who is hiding.', heard_in_search: 'Bob says, "Here!"')).to be_truthy
+      end
+
+      it 'leaves a room where a hidden buddy is found, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, search_finds: 'You notice Bob, who is hiding.', heard_in_search: 'Bob says, "Here!"')).to be false
+      end
+
+      it 'takes a room where a buddy answers, by default' do
+        expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."')).to be true
+      end
+
+      it 'leaves a room where a buddy answers, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."', avoid_buddies: true)).to be false
+      end
+
+      it 'leaves a room a buddy walks into silently while it listens, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, arrives: 'Bob')).to be false
+      end
+
+      it 'takes a room a buddy walks into silently while it listens, by default' do
+        expect(room_judged_empty?(say_echo: echo, arrives: 'Bob')).to be true
+      end
+
+      it 'is not put off by a grouped buddy\'s emote, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob nods.')).to be true
+      end
+
+      it 'takes a room where a grouped buddy speaks, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob says, "Here we go."')).to be true
+      end
+
+      it 'still leaves when an ungrouped buddy speaks alongside a grouped one, with avoid_buddies' do
+        settings.hunting_buddies = %w[Bob Ann]
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, group: ['Bob'], heard: 'Ann says, "Mine."')).to be false
+      end
+
+      it 'does not read an ordinary word as a buddy named like it' do
+        settings.hunting_buddies = ['Will']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: 'The wind will not let up.')).to be true
+      end
+
+      it 'matches a buddy written in lower case in the yaml' do
+        settings.hunting_buddies = ['bob']
+        expect(room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."')).to be true
+      end
+
+      it 'ignores a blank entry in hunting_buddies' do
+        settings.hunting_buddies = ['Bob', nil]
+        expect { room_judged_empty?(say_echo: echo, heard: 'Bob says, "Come on in."') }.not_to raise_error
+      end
+
+      it 'takes a room where a grouped buddy written in lower case speaks, with avoid_buddies' do
+        settings.hunting_buddies = ['bob']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'], heard: 'Bob says, "Here we go."')).to be true
+      end
+
+      it 'takes a room where SEARCH finds a grouped buddy hiding, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, group: ['Bob'],
+                                  search_finds: 'You notice Bob, who is hiding.', heard_in_search: 'You notice Bob, who is hiding.')).to be true
+      end
+
+      it 'does not read a longer name as the buddy (word boundary)' do
+        settings.hunting_buddies = ['Tim']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: 'Timothy nods.')).to be true
+      end
+
+      it 'ignores a buddy named in an ESP thought or a logon, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<pushStream id="thoughts"/>Your mind hears Bob thinking, "hi"<popStream/>')).to be true
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<pushStream id="logons"/> * Bob joins the adventure.<popStream/>')).to be true
+      end
+
+      it 'ignores a blank string entry in hunting_buddies' do
+        settings.hunting_buddies = ['', 'Bob']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: 'A breeze blows in.')).to be true
+      end
+
+      it 'matches a buddy\'s name only as a whole word' do
+        settings.hunting_buddies = ['Tim']
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, heard: '<prompt time="1792040467">&gt;</prompt>')).to be true
+      end
+
+      it 'still takes a room whose only other person is a buddy in your group, with avoid_buddies' do
+        expect(room_judged_empty?(say_echo: echo, avoid_buddies: true, pcs: ['Bob'], group: ['Bob'])).to be true
+      end
     end
 
     # Own echoes of the empty-room say: these must not mark the room occupied.

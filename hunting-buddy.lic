@@ -540,14 +540,16 @@ class HuntingBuddy
   # @param zones_to_search [Array<String>] the hunt's :zone: list
   # @param waiting_room [Integer] room to wait in between search attempts
   # @param prefer_buddies [Boolean] look first for a room a hunting buddy is in
-  # @param avoid_buddies [Boolean] don't take a room just because a hunting
-  #   buddy is visible in it (a buddy found hiding or heard speaking still
-  #   lets it take the room)
+  # @param avoid_buddies [Boolean] treat a room with a hunting buddy in it
+  #   (seen, found hiding or heard) as occupied, unless they're in your group
   # @return [Boolean, Object] true when a room was found (or an escort zone
   #   entered), false when the search gave up; a find_room plugin's result
   #   is returned as-is
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
-    UserVars.friends = @settings.hunting_buddies || []
+    # Game-cased names (the game capitalises them; DRRoom.pcs and
+    # DRRoom.group_members use that form), without blank entries -- an empty
+    # `- ` in the yaml loads as nil, `- ""` as an empty string.
+    UserVars.friends = Array(@settings.hunting_buddies).compact.map { |friend| friend.to_s.strip.capitalize }.reject(&:empty?)
     UserVars.hunting_nemesis = @settings.hunting_nemesis || []
 
     # Forget the previous hunt's escort zone, whoever finds this hunt's room.
@@ -630,8 +632,8 @@ class HuntingBuddy
   # @param rooms_to_search [Array<Integer>] candidate rooms, in priority order
   # @param waiting_room [Integer] room to wait in between search attempts
   # @param prefer_buddies [Boolean] look first for a room a hunting buddy is in
-  # @param avoid_buddies [Boolean] don't take a room just because a hunting
-  #   buddy is visible in it
+  # @param avoid_buddies [Boolean] treat a room with a hunting buddy in it
+  #   (seen, found hiding or heard) as occupied, unless they're in your group
   # @return [Boolean] whether a room was found
   def search_rooms_for_hunting?(rooms_to_search, waiting_room, prefer_buddies, avoid_buddies)
     echo "Aggregated hunting room list: #{rooms_to_search}" if $debug_mode_hunting
@@ -651,7 +653,14 @@ class HuntingBuddy
                            return false if (DRRoom.pcs - DRRoom.group_members).any?
 
                            # No visible friends in the room and no visible people
-                           UserVars.friends.each { |friend| Flags.add("hunting-buddy-room-check-#{friend}", friend) }
+                           # A buddy's (capitalised) name as a whole word ("Will" shouldn't match
+                           # "will not"), on a line that isn't from a window about elsewhere --
+                           # ESP thoughts, logons, deaths, OOC, familiar or group -- where the
+                           # stream tag shares the line with its text.
+                           UserVars.friends.each do |friend|
+                             Flags.add("hunting-buddy-room-check-#{friend}",
+                                       /\A(?!.*<pushStream id=["'](?:thoughts|logons|death|ooc|familiar|group)["']).*\b#{Regexp.escape(friend)}\b/)
+                           end
                            Flags.add('hunting-buddy-room-check',
                                      # someone else speaks. Others "say/ask/exclaim" in the
                                      # third person ("Bob politely says, ..."), our own echo of
@@ -674,16 +683,26 @@ class HuntingBuddy
                              if data.grep(/vague silhouette|You notice \w+, who is|see signs that/).any?
                                pause
                                waitrt?
-                               return UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               # Someone is hidden here. Take the room only if a buddy has been named
+                               # (found by the SEARCH, or speaking up) -- with avoid_buddies, only if
+                               # every buddy named is in your group.
+                               named = UserVars.friends.select { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return false if named.empty?
+
+                               return !avoid_buddies || (named - DRRoom.group_members).empty?
                              end
                              fput("say #{@settings.empty_hunting_room_messages.sample}") unless @settings.empty_hunting_room_messages.empty?
                              room_is_empty = true
                              20.times do |_|
                                pause 0.5
-                               return true if UserVars.friends.find { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               # A buddy was heard: the room is theirs to share by default; with
+                               # avoid_buddies only buddies in your group are welcome.
+                               heard = UserVars.friends.select { |friend| Flags["hunting-buddy-room-check-#{friend}"] }
+                               return !avoid_buddies || (heard - DRRoom.group_members).empty? unless heard.empty?
                                return false if Flags['hunting-buddy-room-check']
 
-                               room_is_empty = (DRRoom.pcs - DRRoom.group_members - UserVars.friends).empty?
+                               welcome = avoid_buddies ? DRRoom.group_members : DRRoom.group_members + UserVars.friends
+                               room_is_empty = (DRRoom.pcs - welcome).empty?
                              end
                              room_is_empty
                            when /You're not in any condition to be searching around/i
