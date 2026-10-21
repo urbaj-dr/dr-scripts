@@ -32,6 +32,18 @@ class HuntingBuddy
       # Let plugins clean up
       buddy&.send(:notify_hook, :cleanup, buddy) rescue nil
     end
+
+    # Loads every hunting-buddy-plugin-*.rb in dir, in name order. A plugin
+    # that fails to load is reported and skipped; the others still load.
+    def load_plugins(dir = File.join(SCRIPT_DIR, 'custom'))
+      Dir.glob(File.join(dir, 'hunting-buddy-plugin-*.rb')).sort.each do |plugin_file|
+        begin
+          load plugin_file
+        rescue StandardError, ScriptError => e
+          echo "Failed to load hunting-buddy plugin #{File.basename(plugin_file)}: #{e.message}"
+        end
+      end
+    end
   end
 
   attr_reader :settings, :hunting_data, :hunting_zones, :hunting_info
@@ -41,14 +53,15 @@ class HuntingBuddy
 
   # Fire a hook on all registered plugins.
   # Returns the first non-nil result (for decision hooks like :find_room).
-  # Plugins that don't implement a hook are silently skipped.
+  # Plugins that don't implement a hook are silently skipped, and so is a
+  # plugin that raises (including NotImplementedError and other ScriptErrors).
   def fire_hook(hook_name, *args, **kwargs)
     self.class.registered_plugins.each do |plugin|
       next unless plugin.respond_to?(hook_name)
       begin
         result = plugin.send(hook_name, *args, **kwargs)
         return result unless result.nil?
-      rescue => e
+      rescue StandardError, ScriptError => e
         echo "Plugin #{plugin.class.name} error in #{hook_name}: #{e.message}" if $debug_mode_hunting
       end
     end
@@ -62,7 +75,7 @@ class HuntingBuddy
       next unless plugin.respond_to?(hook_name)
       begin
         plugin.send(hook_name, *args, **kwargs)
-      rescue => e
+      rescue StandardError, ScriptError => e
         echo "Plugin #{plugin.class.name} error in #{hook_name}: #{e.message}" if $debug_mode_hunting
       end
     end
@@ -804,14 +817,7 @@ before_dying do
   HuntingBuddy.on_death($HUNTING_BUDDY)
 end
 
-# Load plugins from custom directory
-Dir.glob(File.join(SCRIPT_DIR, 'custom', 'hunting-buddy-plugin-*.rb')).sort.each do |plugin_file|
-  begin
-    load plugin_file
-  rescue => e
-    echo "Failed to load hunting-buddy plugin #{File.basename(plugin_file)}: #{e.message}"
-  end
-end
+HuntingBuddy.load_plugins
 
 $HUNTING_BUDDY = HuntingBuddy.new
 $HUNTING_BUDDY.main
