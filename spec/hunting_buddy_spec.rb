@@ -1681,6 +1681,25 @@ RSpec.describe HuntingBuddy do
                                      ])
     end
 
+    it 'does not run a scalar action string, as before' do
+      expect { run_main(hunt_info('before' => 'prep now')) }.to raise_error(NoMethodError)
+    end
+
+    it 'treats only a missing action list as empty: a scalar or false still fails in every runner' do
+      ['prep now', false].each do |bad|
+        expect { buddy.execute_actions(bad) }.to raise_error(NoMethodError)
+        expect { buddy.execute_nonblocking_actions(bad) }.to raise_error(NoMethodError)
+        expect { buddy.stop_actions(bad) }.to raise_error(NoMethodError)
+      end
+      expect { buddy.execute_actions(nil) }.not_to raise_error
+    end
+
+    it 'treats a hunt with no before, during or after keys as having none' do
+      run_main({ :zone => 'rats', :duration => 30, 'args' => [] })
+
+      expect(without_messages).to eq([[:find_room, ['rats']], [:hunt, []]])
+    end
+
     it 'retreats and stops all hunting when the room search finds you bleeding' do
       allow(buddy).to receive(:find_hunting_room?) { buddy.stopped_for_bleeding = true }
       running << 'tendme'
@@ -1688,6 +1707,8 @@ RSpec.describe HuntingBuddy do
       run_main(hunt_info('during' => ['perf']))
 
       expect(events).not_to include([:hunt, ['a']])
+      expect(events.drop_while { |event| event != [:message, '***STATUS*** Stopping all hunting because bleeding'] }.reject { |e| e.first == :message })
+        .to eq([[:retreat], [:stop, 'tendme'], [:run, 'wrapup', ['x']]])
       expect(without_messages).to eq([[:run, 'prep', []], [:retreat], [:stop, 'tendme'], [:run, 'wrapup', ['x']]])
     end
 
