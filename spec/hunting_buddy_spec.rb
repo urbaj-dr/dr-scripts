@@ -1038,4 +1038,139 @@ RSpec.describe HuntingBuddy do
       expect(buddy.hunt_stop_reason).to be_nil
     end
   end
+
+  # ===========================================================================
+  # find_hunting_room?: the :zone: list is a priority order
+  # ===========================================================================
+
+  describe '#find_hunting_room? zone order' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:echoes) { [] }
+    let(:searched) { [] }
+    let(:escorted) { [] }
+
+    def search_result(result)
+      allow(DRCT).to receive(:find_empty_room) do |rooms, *_rest|
+        searched << rooms
+        result
+      end
+    end
+
+    before do
+      buddy.instance_variable_set(:@settings, OpenStruct.new(
+                                                custom_hunting_zones: { 'my_rats' => [7, 8] },
+                                                hunting_buddies: [], hunting_nemesis: [],
+                                                hunting_room_min_mana: 0, hunting_room_strict_mana: false, hunting_room_max_searches: 30
+                                              ))
+      buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1, 2], 'goblins' => [3, 4] })
+      buddy.instance_variable_set(:@escort_zones, { 'ship' => { 'base' => 9, 'area' => 'ship_area', 'enter' => 'board' } })
+      allow(buddy).to receive(:echo) { |message| echoes << message }
+      allow(DRC).to receive(:message)
+      allow(DRCT).to receive(:walk_to)
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args| escorted << [name, args] }
+    end
+
+    it 'pools the ordinary zones into one search, in list order' do
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[rats goblins], 851)).to be true
+      expect(searched).to eq([[1, 2, 3, 4]])
+      expect(escorted).to be_empty
+    end
+
+    it 'falls back to an escort zone only when the ordinary zones had no room' do
+      search_result(false)
+
+      expect(buddy.find_hunting_room?(%w[rats goblins ship], 851)).to be true
+      expect(searched).to eq([[1, 2, 3, 4]])
+      expect(escorted).to eq([['bescort', %w[ship_area board]]])
+      expect(buddy.instance_variable_get(:@exit)).to eq(%w[ship_area exit])
+      expect(echoes).not_to include('Unable to find hunting zone: ship')
+    end
+
+    it 'still searches ordinary zones listed after the escort zone' do
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[rats ship goblins], 851)).to be true
+      expect(searched).to eq([[1, 2, 3, 4]])
+      expect(escorted).to be_empty
+      expect(buddy.instance_variable_get(:@exit)).to be_nil
+    end
+
+    it 'enters a leading escort zone without searching the zones after it' do
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[ship rats], 851)).to be true
+      expect(searched).to be_empty
+      expect(escorted).to eq([['bescort', %w[ship_area board]]])
+    end
+
+    it 'goes straight to the escort zone when the ordinary zones are unknown' do
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[nowhere ship], 851)).to be true
+      expect(searched).to be_empty
+      expect(echoes).to include('Unable to find hunting zone: nowhere')
+    end
+
+    it 'uses a custom_hunting_zones entry in place of the base zone' do
+      search_result(true)
+
+      buddy.find_hunting_room?(%w[my_rats goblins], 851)
+
+      expect(searched).to eq([[7, 8, 3, 4]])
+    end
+
+    it 'treats a custom zone named like an escort zone as the custom zone' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['ship'] = [5, 6]
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
+      expect(searched).to eq([[5, 6]])
+      expect(escorted).to be_empty
+    end
+
+    it 'exits when no zone in the list has any rooms' do
+      search_result(true)
+
+      expect { buddy.find_hunting_room?(%w[nowhere], 851) }.to raise_error(SystemExit)
+      expect(searched).to be_empty
+    end
+
+    it 'skips the hunt, without exiting, when the :zone: list is empty' do
+      search_result(true)
+
+      expect(buddy.find_hunting_room?([], 851)).to be false
+      expect(searched).to be_empty
+    end
+
+    it 'reports a failed search when there is no escort zone to fall back on' do
+      search_result(false)
+
+      expect(buddy.find_hunting_room?(%w[rats], 851)).to be false
+    end
+
+    it 'does not fall back to the escort zone when hunting was stopped during the search' do
+      allow(DRCT).to receive(:find_empty_room) do |rooms, *_rest|
+        searched << rooms
+        buddy.stop_hunting
+        false
+      end
+
+      expect(buddy.find_hunting_room?(%w[rats ship], 851)).to be false
+      expect(escorted).to be_empty
+    end
+
+    it 'forgets the previous hunt\'s escort zone when a plugin finds the room' do
+      plugin = Object.new
+      plugin.define_singleton_method(:find_room) { |*_| true }
+      buddy.instance_variable_set(:@exit, %w[ship_area exit])
+      HuntingBuddy.register_plugin(plugin)
+
+      expect(buddy.find_hunting_room?(%w[rats], 851)).to be true
+      expect(buddy.instance_variable_get(:@exit)).to be_nil
+    ensure
+      HuntingBuddy.instance_variable_set(:@registered_plugins, [])
+    end
+  end
 end
