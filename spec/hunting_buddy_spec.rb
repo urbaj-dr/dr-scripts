@@ -1130,6 +1130,23 @@ RSpec.describe HuntingBuddy do
       expect(escorted).to be_empty
     end
 
+    it 'searches the base zone\'s rooms for a custom entry that lists none' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['rats'] = []
+      search_result(true)
+
+      buddy.find_hunting_room?(%w[rats], 851)
+
+      expect(searched).to eq([[1, 2]])
+    end
+
+    it 'still escorts into an escort zone whose custom entry lists no rooms' do
+      buddy.instance_variable_get(:@settings).custom_hunting_zones['ship'] = []
+      search_result(true)
+
+      expect(buddy.find_hunting_room?(%w[ship], 851)).to be true
+      expect(escorted).to eq([['bescort', %w[ship_area board]]])
+    end
+
     it 'exits when no zone in the list has any rooms' do
       search_result(true)
 
@@ -1171,6 +1188,125 @@ RSpec.describe HuntingBuddy do
       expect(buddy.instance_variable_get(:@exit)).to be_nil
     ensure
       HuntingBuddy.instance_variable_set(:@registered_plugins, [])
+    end
+  end
+
+  # ===========================================================================
+  # current_hunting_zone
+  # ===========================================================================
+
+  describe '#current_hunting_zone' do
+    let(:buddy) { HuntingBuddy.allocate }
+
+    before do
+      buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1, 2], 'goblins' => [3, 4] })
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: { 'my_spot' => [500, 501], 'goblins' => [600] }))
+    end
+
+    it 'names the base-hunting.yaml zone the room belongs to' do
+      expect(buddy.current_hunting_zone(2)).to eq('rats')
+    end
+
+    it 'names the custom_hunting_zones zone the room belongs to' do
+      expect(buddy.current_hunting_zone(501)).to eq('my_spot')
+    end
+
+    it 'uses the custom rooms, not the base rooms, for a zone the custom list overrides' do
+      expect(buddy.current_hunting_zone(600)).to eq('goblins')
+      expect(buddy.current_hunting_zone(3)).to be_nil
+    end
+
+    it 'returns nil for a room in no zone' do
+      expect(buddy.current_hunting_zone(9999)).to be_nil
+    end
+
+    it 'works when custom_hunting_zones is not set' do
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: nil))
+
+      expect(buddy.current_hunting_zone(3)).to eq('goblins')
+    end
+  end
+
+  # ===========================================================================
+  # main: staying in the room between hunts in the same zone
+  # ===========================================================================
+
+  describe '#main room search between hunts' do
+    let(:buddy) { HuntingBuddy.allocate }
+
+    # Runs two identical hunts while standing in `room` and returns how many
+    # times hunting-buddy searched for a room (1 means it stayed for hunt 2).
+    def searches_for(zones, room, custom, base_zones = { 'rats' => [1, 2], 'brewery' => [3, 4], 'brewery_alias' => [3, 4] }, on_search: nil)
+      buddy.instance_variable_set(:@hunting_zones, base_zones)
+      buddy.instance_variable_set(:@escort_zones, {})
+      buddy.instance_variable_set(:@settings, OpenStruct.new(custom_hunting_zones: custom, sell_loot_skip_bank: true, safe_room: 1, cyclic_no_release: []))
+      info = { :zone => zones, 'args' => [], 'before' => [], 'after' => [], 'during' => [] }
+      buddy.instance_variable_set(:@hunting_info, [info.dup, info.dup])
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: room))
+      %i[check_bundling_rope check_prehunt_buffs hunt execute_actions execute_nonblocking_actions stop_actions].each { |m| allow(buddy).to receive(m) }
+      allow(buddy).to receive_messages(encumbered?: false, should_stop_for_high_skills?: false, should_stop_for_low_skills?: false)
+      allow(DRC).to receive(:bput).and_return('Stow what?')
+      allow(DRC).to receive(:message)
+      allow(DRC).to receive_messages(right_hand: nil, left_hand: nil)
+      allow(DRCA).to receive(:release_cyclics)
+      allow(DRCT).to receive(:walk_to)
+      allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
+      count = 0
+      allow(buddy).to receive(:find_hunting_room?) do
+        on_search&.call
+        count += 1
+      end
+      buddy.main
+      count
+    end
+
+    it 'stays in a custom zone room' do
+      expect(searches_for(['my_spot'], 500, { 'my_spot' => [500] })).to eq(1)
+    end
+
+    it 'stays in a base zone room that a differently named custom zone also lists' do
+      expect(searches_for(['brewery'], 3, { 'my_brewery' => [3] })).to eq(1)
+    end
+
+    it 'stays in a room that belongs to two base zones, whichever the hunt names' do
+      expect(searches_for(['brewery_alias'], 3, {})).to eq(1)
+      expect(searches_for(['brewery'], 3, {})).to eq(1)
+    end
+
+    it 'uses the base rooms for a custom entry with no rooms (nil or an empty list)' do
+      expect(searches_for(['brewery'], 3, { 'brewery' => nil })).to eq(1)
+      expect(searches_for(['brewery'], 3, { 'brewery' => [] })).to eq(1)
+    end
+
+    it 'stays when two custom zones overlap and the hunt names the second' do
+      expect(searches_for(['spot_b'], 500, { 'spot_a' => [500, 501], 'spot_b' => [500] })).to eq(1)
+    end
+
+    it 'uses a custom zone\'s rooms, not the base zone\'s, when it overrides a base zone' do
+      base = { 'goblins' => [3, 4] }
+      expect(searches_for(['goblins'], 3, { 'goblins' => [600] }, base)).to eq(2)
+      expect(searches_for(['goblins'], 600, { 'goblins' => [600] }, base)).to eq(1)
+    end
+
+    it 'stays when the room is in any of the hunt\'s zones, not just the first' do
+      expect(searches_for(%w[rats brewery], 3, {})).to eq(1)
+    end
+
+    it 'treats a custom zone written as a single room id as a one-room zone' do
+      expect(searches_for(['my_spot'], 1234, { 'my_spot' => 1234 })).to eq(1)
+    end
+
+    it 'does not take the escort out again when the next hunt stays put after an escort hunt' do
+      exits = []
+      allow(DRC).to receive(:wait_for_script_to_complete) { |name, args = []| exits << args if name == 'bescort' }
+      enter_escort = -> { buddy.instance_variable_set(:@exit, %w[manor exit]) }
+
+      expect(searches_for(['my_spot'], 500, { 'my_spot' => [500] }, on_search: enter_escort)).to eq(1)
+      expect(exits).to eq([%w[manor exit]])
+    end
+
+    it 'searches again when the next hunt is in a zone you are not in' do
+      expect(searches_for(['rats'], 3, {})).to eq(2)
     end
   end
 end

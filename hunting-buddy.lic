@@ -243,7 +243,7 @@ class HuntingBuddy
       # or on subsequent hunts if where we currently are isn't where
       # that next hunt wants to be. These checks help reduce moving
       # around if it's be fine for us to start the next hunt in same spot.
-      if index == 0 || !hunting_zones.include?(current_hunting_zone)
+      if index == 0 || !in_hunting_zone?(hunting_zones)
         next unless find_hunting_room?(hunting_zones, waiting_room, prefer_buddies, avoid_buddies)
       end
 
@@ -277,7 +277,11 @@ class HuntingBuddy
       while DRC.bput('stow feet', /You pick up/, /Stow what/) =~ /You pick up/
       end
 
-      DRC.wait_for_script_to_complete('bescort', @exit) if @exit
+      if @exit
+        DRC.wait_for_script_to_complete('bescort', @exit)
+        # Out of the escort zone now; a next hunt that stays put mustn't exit again.
+        @exit = nil
+      end
       DRCA.release_cyclics(@settings.cyclic_no_release)
 
       # Execute scripts to run after the hunt
@@ -355,11 +359,35 @@ class HuntingBuddy
 
   # ------------------------------------------------------------
 
-  # Returns the hunting zone that you are currently in.
-  # If you aren't in a known hunting zone then returns nil.
+  # Returns the hunting zone that you are currently in: the first zone
+  # (custom_hunting_zones first, then base-hunting.yaml, in file order) whose
+  # rooms include the room, or nil if none does. A room can be in several
+  # zones; to ask whether you are in a particular hunt's zones, use
+  # in_hunting_zone?.
   def current_hunting_zone(room_id = Room.current.id)
-    # Returns the name of the hunting zone of a given room ID.
-    @hunting_zones.find { |_name, rooms| rooms.include?(room_id) }.first
+    custom_names = (@settings.custom_hunting_zones || {}).keys.map(&:to_s)
+    (custom_names + (@hunting_zones.keys - custom_names)).find { |name| zone_rooms(name)&.include?(room_id) }
+  end
+
+  # Is the room in any of these zones?
+  def in_hunting_zone?(zones, room_id = Room.current.id)
+    zones.any? { |zone| zone_rooms(zone)&.include?(room_id) }
+  end
+
+  # Room ids for one hunting zone, or nil for an unknown zone: the
+  # custom_hunting_zones entry if it has rooms, otherwise the base-hunting.yaml
+  # zone. The single rule for which rooms a zone name means.
+  def zone_rooms(zone)
+    rooms = custom_zone_rooms(zone) || @hunting_zones["#{zone}"]
+    # A zone written as a single room id is a one-room zone.
+    rooms && Array(rooms)
+  end
+
+  # The custom_hunting_zones entry's rooms, or nil when there is no entry or
+  # it lists no rooms (nil, or an empty list) -- then the base zone applies.
+  def custom_zone_rooms(zone)
+    rooms = Array((@settings.custom_hunting_zones || {})["#{zone}"])
+    rooms unless rooms.empty?
   end
 
   def find_hunting_room?(zones_to_search, waiting_room, prefer_buddies = false, avoid_buddies = false)
@@ -408,7 +436,7 @@ class HuntingBuddy
   # The base-hunting.yaml escort zone with this name, unless your
   # custom_hunting_zones defines a zone of the same name (which wins).
   def escort_zone_info(zone)
-    return nil if (@settings.custom_hunting_zones || {})["#{zone}"]
+    return nil if custom_zone_rooms(zone)
 
     @escort_zones[zone]
   end
@@ -421,18 +449,13 @@ class HuntingBuddy
     @exit = [escort_info['area'], 'exit']
   end
 
-  # Room ids for one hunting zone: the custom_hunting_zones entry from your
-  # setup yaml if there is one, otherwise the base-hunting.yaml zone.
+  # Room ids for one hunting zone (see zone_rooms), saying when a custom zone
+  # overrides a base one and when a zone is unknown.
   def hunting_zone_rooms(zone)
-    if @settings.custom_hunting_zones["#{zone}"]
-      echo "Overriding base-hunting.yaml's #{zone}" if @hunting_zones["#{zone}"]
-      @settings.custom_hunting_zones["#{zone}"]
-    elsif @hunting_zones["#{zone}"]
-      @hunting_zones["#{zone}"]
-    else
-      echo "Unable to find hunting zone: #{zone}"
-      []
-    end
+    echo "Overriding base-hunting.yaml's #{zone}" if custom_zone_rooms(zone) && @hunting_zones["#{zone}"]
+    rooms = zone_rooms(zone)
+    echo "Unable to find hunting zone: #{zone}" unless rooms
+    rooms || []
   end
 
   # Walks the given rooms looking for one to hunt in, using the
