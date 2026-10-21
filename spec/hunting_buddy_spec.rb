@@ -758,4 +758,111 @@ RSpec.describe HuntingBuddy do
       end
     end
   end
+
+  # ===========================================================================
+  # Room check: is the candidate hunting room empty?
+  # ===========================================================================
+
+  describe '#find_hunting_room? empty-room check' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:settings) do
+      OpenStruct.new(
+        custom_hunting_zones: {},
+        hunting_buddies: [],
+        hunting_nemesis: [],
+        empty_hunting_room_messages: ['Is anyone hunting here?'],
+        hunting_room_min_mana: 0,
+        hunting_room_strict_mana: false,
+        hunting_room_max_searches: 30
+      )
+    end
+
+    # Feed a server line through the registered Flags matchers, the way
+    # Lich's DRParser.check_events does for every downstream line.
+    def deliver(line)
+      Flags.matchers.each do |key, regexes|
+        regexes.each do |regex|
+          if (match = line.match(regex))
+            Flags[key] = match
+            break
+          end
+        end
+      end
+    end
+
+    # Runs the room predicate hunting-buddy hands to find_empty_room, with
+    # `say_echo` as the line the game sends back for our own empty-room say
+    # and `heard` as anything else that arrives while we wait.
+    def room_judged_empty?(say_echo:, heard: nil)
+      buddy.instance_variable_set(:@settings, settings)
+      buddy.instance_variable_set(:@hunting_zones, { 'rats' => [1] })
+      buddy.instance_variable_set(:@escort_zones, {})
+      buddy.instance_variable_set(:@hunting_buddies_max, 2)
+      DRRoom.pcs = []
+      DRRoom.group_members = []
+      allow(DRC).to receive(:bput).with('search', any_args).and_return('Roundtime: 3 sec.')
+      allow(buddy).to receive(:reget).and_return([])
+      allow(buddy).to receive(:pause)
+      allow(buddy).to receive(:fput) do |command|
+        next unless command.start_with?('say ')
+
+        deliver(say_echo)
+        deliver(heard) if heard
+      end
+      allow(DRCT).to receive(:find_empty_room) { |_rooms, _idle, predicate, *_rest| predicate.call(1) }
+
+      buddy.find_hunting_room?(['rats'], 851)
+    end
+
+    # Own echoes of the empty-room say: these must not mark the room occupied.
+    # The preset lines are verbatim from a Saga-dialect capture (lich-5
+    # spec/fixtures/streams/dr_saga_containers_speech.xml).
+    [
+      'You say, "Is anyone hunting here?"',
+      'You politely say, "Is anyone hunting here?"',
+      'You ask, "Is anyone hunting here?"',
+      '  You say, "Is anyone hunting here?"',
+      '>You say, "Is anyone hunting here?"',
+      %(<prompt time="1792040467">&gt;</prompt>You say, "Is anyone hunting here?"),
+      %(<prompt time="1792040467">&gt;</prompt><preset id='speech'>You politely say</preset>, "Hello."),
+      %(<pushStream id="talk"/><preset id='speech'>You politely say</preset>, "Hello."),
+      %(<popStream/><preset id='speech'>You politely say</preset>, "Hello."),
+      %(<preset id='speech'>You say, "Is anyone hunting here?"</preset>)
+    ].each do |echo|
+      it "does not treat its own echo as someone else speaking: #{echo}" do
+        expect(room_judged_empty?(say_echo: echo)).to be true
+      end
+    end
+
+    # Someone else talking: the room is taken.
+    [
+      'Bob says, "I am."',
+      'Bob politely says, "I am."',
+      'Bob asks, "Who is there?"',
+      'Bob exclaims, "Mine!"',
+      'Bob says to you, "Go away."',
+      'Someone says, "boo"',
+      'Youngblood says, "This is my room."',
+      'Bob asks you, "Who goes there?"',
+      %(<prompt time="1792040467">&gt;</prompt>Bob says, "I am."),
+      %(<prompt time="1792040467">&gt;</prompt><preset id='speech'><a exist="1" noun="Delphine">Delphine</a> politely says</preset>, "Hello."),
+      %(<pushStream id="talk"/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello."),
+      %(<popStream/><preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
+    ].each do |answer|
+      it "leaves the room when someone else speaks: #{answer}" do
+        expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: answer)).to be false
+      end
+    end
+
+    it 'does not treat a mention of saying, without a quote, as someone speaking' do
+      expect(room_judged_empty?(say_echo: 'You say, "Is anyone hunting here?"', heard: 'Bob says nothing, then shrugs.')).to be true
+    end
+
+    it 'leaves the room on someone else speaking even when our own echo is a Saga preset line' do
+      own = %(<preset id='speech'>You politely say</preset>, "Hello.")
+      other = %(<preset id='speech'><a exist="-10700003" noun="Delphine">Delphine</a> politely says</preset>, "Hello.")
+
+      expect(room_judged_empty?(say_echo: own, heard: other)).to be false
+    end
+  end
 end
