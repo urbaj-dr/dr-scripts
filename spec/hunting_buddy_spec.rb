@@ -1244,7 +1244,7 @@ RSpec.describe HuntingBuddy do
       buddy.instance_variable_set(:@hunting_info, [info.dup, info.dup])
       allow(Room).to receive(:current).and_return(OpenStruct.new(id: room))
       %i[check_bundling_rope check_prehunt_buffs hunt execute_actions execute_nonblocking_actions stop_actions].each { |m| allow(buddy).to receive(m) }
-      allow(buddy).to receive_messages(encumbered?: false, should_stop_for_high_skills?: false, should_stop_for_low_skills?: false)
+      allow(buddy).to receive_messages(encumbered?: false, should_stop_for_high_skills?: false, get_skills_below_low_threshold: [])
       allow(DRC).to receive(:bput).and_return('Stow what?')
       allow(DRC).to receive(:message)
       allow(DRC).to receive_messages(right_hand: nil, left_hand: nil)
@@ -1313,6 +1313,107 @@ RSpec.describe HuntingBuddy do
   # ===========================================================================
   # Learning-rate thresholds behind stop_on / stop_on_low
   # ===========================================================================
+
+  describe 'low learning-rate threshold' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:skills) { %w[Locksmithing Forging Outfitting] }
+
+    before do
+      buddy.instance_variable_set(:@stop_on_low_threshold, 2)
+      allow(DRSkill).to receive(:getskillset).and_return('Lore')
+      allow(DRSkill).to receive(:getxp) { |skill| { 'Locksmithing' => 1, 'Forging' => 12, 'Outfitting' => 2 }.fetch(skill) }
+    end
+
+    it 'stops when any listed skill is at or below the threshold' do
+      expect(buddy.should_stop_for_low_skills?(skills)).to be true
+    end
+
+    it 'treats a blank stop_on_low (nil or an empty string) as no skills' do
+      expect(buddy.get_skills_below_low_threshold(nil)).to eq([])
+      expect(buddy.get_skills_below_low_threshold('')).to eq([])
+    end
+
+    it 'names only the skills that dropped when the hunt loop stops for them' do
+      messages = []
+      buddy.instance_variable_set(:@settings, OpenStruct.new(health_threshold: 0, stop_hunting_if_bleeding: false))
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 100))
+      allow(DRC).to receive(:message) { |message| messages << message }
+      allow(DRC).to receive(:verify_script).and_return(true)
+      allow(DRC).to receive(:retreat)
+      allow(DRStats).to receive(:health).and_return(100)
+      allow(Script).to receive(:running?).and_return(false)
+      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = Class.new { def running = !@stopped; def stop = (@stopped = true) }.new }
+      allow(buddy).to receive_messages(pause: nil, clear: nil, fput: nil, yiamura_all_done?: true)
+
+      buddy.hunt([], nil, nil, [skills], nil, nil, nil, nil)
+
+      expect(messages).to include('***STATUS*** Stopping because skills dropped below learning threshold: Locksmithing, Outfitting')
+    ensure
+      $COMBAT_TRAINER = nil
+    end
+
+    it 'lists the stop_on skills as plain text when the hunt loop stops for them' do
+      messages = []
+      buddy.instance_variable_set(:@settings, OpenStruct.new(health_threshold: 0, stop_hunting_if_bleeding: false))
+      allow(Room).to receive(:current).and_return(OpenStruct.new(id: 100))
+      allow(DRC).to receive(:message) { |message| messages << message }
+      allow(DRC).to receive(:verify_script).and_return(true)
+      allow(DRC).to receive(:retreat)
+      allow(DRStats).to receive(:health).and_return(100)
+      allow(Script).to receive(:running?).and_return(false)
+      allow(buddy).to receive(:start_script) { $COMBAT_TRAINER = Class.new { def running = !@stopped; def stop = (@stopped = true) }.new }
+      allow(buddy).to receive_messages(pause: nil, clear: nil, fput: nil, yiamura_all_done?: true)
+
+      allow(buddy).to receive(:should_stop_for_high_skills?).and_return(true)
+      buddy.hunt([], nil, [%w[Evasion Tactics]], nil, nil, nil, nil, nil)
+
+      expect(messages).to include('***STATUS*** Stopping because skills reached learning threshold: Evasion, Tactics')
+    ensure
+      $COMBAT_TRAINER = nil
+    end
+  end
+
+  describe '#main skipping a hunt for its skills' do
+    let(:buddy) { HuntingBuddy.allocate }
+    let(:messages) { [] }
+
+    def run_main(info)
+      buddy.instance_variable_set(:@settings, OpenStruct.new(sell_loot_skip_bank: true, safe_room: 1, cyclic_no_release: []))
+      buddy.instance_variable_set(:@hunting_info, [{ :zone => 'rats', 'args' => [], 'before' => [], 'after' => [], 'during' => [] }.merge(info)])
+      buddy.instance_variable_set(:@stop_on_low_threshold, 2)
+      buddy.instance_variable_set(:@stop_on_high_threshold, 32)
+      %i[check_bundling_rope check_prehunt_buffs hunt execute_actions execute_nonblocking_actions stop_actions].each { |m| allow(buddy).to receive(m) }
+      allow(buddy).to receive_messages(encumbered?: false, find_hunting_room?: true)
+      allow(DRC).to receive(:bput).and_return('Stow what?')
+      allow(DRC).to receive_messages(right_hand: nil, left_hand: nil)
+      allow(DRCA).to receive(:release_cyclics)
+      allow(DRC).to receive(:message) { |message| messages << message }
+      allow(DRCT).to receive(:walk_to)
+      allow(EquipmentManager).to receive(:new).and_return(double(wear_equipment_set?: true))
+      allow(DRSkill).to receive(:getskillset).and_return('Lore')
+      allow(DRSkill).to receive(:getxp) { |skill| { 'Locksmithing' => 1, 'Forging' => 12, 'Evasion' => 34, 'Parry Ability' => 33 }.fetch(skill) }
+      buddy.main
+    end
+
+    it 'names only the stop_on_low skills that dropped' do
+      run_main('stop_on_low' => %w[Locksmithing Forging])
+
+      expect(messages).to include('***STATUS*** Skipping hunt because skills dropped below learning threshold: Locksmithing')
+      expect(buddy).not_to have_received(:hunt)
+    end
+
+    it 'hunts normally with stop_on_low set to an empty string' do
+      run_main('stop_on_low' => '')
+
+      expect(buddy).to have_received(:hunt)
+    end
+
+    it 'lists the stop_on skills as plain text' do
+      run_main('stop_on' => ['Evasion', 'Parry Ability'])
+
+      expect(messages).to include('***STATUS*** Skipping hunt because skills reached learning threshold: Evasion, Parry Ability')
+    end
+  end
 
   describe 'high learning-rate threshold' do
     let(:buddy) { HuntingBuddy.allocate }
