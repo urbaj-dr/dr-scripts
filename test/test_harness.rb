@@ -1258,6 +1258,7 @@ module Harness
       def wearing?(*_args); false; end
       def inside?(*_args); false; end
       def get_item?(*_args); true; end
+      def get_item_safe(*_args); true; end
       def get_item_if_not_held?(*_args); true; end
       def get_item_unsafe(*_args); end
       def get_item(*_args); end
