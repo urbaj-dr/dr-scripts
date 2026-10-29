@@ -3040,6 +3040,10 @@ task_copper_floor: 20000
 # A value below task_copper_floor is raised to the floor.
 task_copper_target: 110000
 
+# Setting for taskmaster - Scripts to run to completion before asking for each task, with any
+# arguments separated by spaces (e.g. 'buff crafting'). Empty runs nothing.
+task_before_scripts: []
+
 # Settings for task-forage (completing foraging tasks for Mags and similar NPCs, primarily for Trading experience)
 task_forage_settings:
   # Where foraged items should be temporarily stored
