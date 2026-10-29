@@ -77,13 +77,7 @@ class TaskMaster
       end
       exit
     elsif args.finish
-      @dispose, @remainder = [false, false]
-      get_instructions # picks up a fresh set of instructions from the task master
-      item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
-      tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
-      exit
+      resume_task
     elsif args.reset_output
       _respond("<clearStream id='Task Master'/>")
       exit
@@ -376,6 +370,70 @@ class TaskMaster
     return item, count, volume_per_item, base, type
   end
 
+  TURN_IN_MORE_NEEDED = /(\d+) more (?:are|is) needed/
+  INSTRUCTION_USES = /They have only (\d+) uses? remaining/
+
+  # Finishes a task already in progress, for instance after a crash or a
+  # reconnect: hand in any finished items already in the bag, make sure the
+  # instructions have a use for every item still owed (asking the taskmaster
+  # only when they don't, since replacements are limited), then make and hand
+  # in the rest.
+  def resume_task
+    @dispose, @remainder = [false, false]
+    item, owed = read_task
+    unless item
+      DRC.message("You are not on a task with #{@npc}.")
+      exit
+    end
+    owed = turn_in_banked(item, owed)
+    exit if owed.zero?
+
+    ensure_instructions(item, owed)
+    item, count, volume_per_item, base, type = read_instructions(item, owed)
+    tool_pickup if !@self_repair && DRCI.exists?("rangu ticket")
+    send(@npc.to_sym, item, count, volume_per_item, base, type)
+    complete_task(item, count)
+    exit
+  end
+
+  # Hands in finished items already in the bag and returns how many are still
+  # owed, or 0 once the task is complete (its reward sack sorted). A give that
+  # misses a wandering taskmaster is retried (give_item); anything she won't
+  # take goes back in the bag and stops the hand-in.
+  def turn_in_banked(item, owed)
+    loop do
+      case give_item(item)
+      when nil
+        break
+      when /hands you a/
+        sort_sack(item)
+        fput('dump junk')
+        return 0
+      when TURN_IN_MORE_NEEDED
+        owed = Regexp.last_match(1).to_i
+      else
+        DRCC.stow_crafting_item(item, @bag, nil)
+        break
+      end
+    end
+    owed
+  end
+
+  # Leaves the item's instructions in hand, asking the taskmaster for a fresh
+  # set only when none are carried, they are someone else's, or they have fewer
+  # uses than items owed (each item takes one study).
+  def ensure_instructions(item, owed)
+    carried = DRCI.get_item?("#{item} instructions", @bag)
+    if carried
+      reply = DRC.bput("read my #{item} instructions", INSTRUCTION_USES, /written by or for someone else/, /What were you referring/)
+      return if reply[INSTRUCTION_USES, 1].to_i >= owed
+
+      # Put the short or unreadable set back so only the new one is in hand.
+      DRCC.stow_crafting_item("#{item} instructions", @bag, nil)
+    end
+    get_instructions
+  end
+
   # Put the instructions just read into the crafting bag by name, where the
   # crafting scripts put them after studying, rather than leaving them to
   # default stow. Anything else still in hand (a tool or unfinished item held
@@ -396,12 +454,7 @@ class TaskMaster
     when /if you agree to (his|her) terms/, /To whom are you speaking/
       get_task
     when /You are already on a task/
-      @dispose, @remainder = [false, false]
-      get_instructions # picks up a fresh set of instructions from the task master
-      item, count, volume_per_item, base, type = finish # gets the relevant information from the task verb to send to the worker methods
-      send(@npc.to_sym, item, count, volume_per_item, base, type)
-      complete_task(item, count)
-      exit
+      resume_task
     when /utterly ignoring you/, /give you a chance a little later/
       DRC.message("Task on cooldown or recently canceled a task, either way, going to have to wait.")
       pause 15
@@ -590,29 +643,29 @@ class TaskMaster
 
   # Consecutive gives that found nobody to take the item before giving up.
   MAX_GIVE_MISSES = 5
+  GIVE_MISSED = /What is it you're trying to give/
+
+  # Gives one finished item to the taskmaster and returns the reply, or nil when
+  # there is none in hand or in the bag. A give that misses her (she wandered
+  # off between the get and the give) leaves the item in hand: find her again
+  # and give that same item, stopping after MAX_GIVE_MISSES misses in a row.
+  def give_item(item)
+    MAX_GIVE_MISSES.times do
+      find_npc(@rooms, @npc)
+      return unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
+
+      reply = DRC.bput("give my #{item} to #{@npc}", TURN_IN_MORE_NEEDED, /hands you a/, GIVE_MISSED)
+      return reply unless reply =~ GIVE_MISSED
+    end
+    DRC.message("Could not hand a #{item} to #{@npc} after #{MAX_GIVE_MISSES} tries, stopping.")
+    exit
+  end
 
   def complete_task(item, _count)
-    misses = 0
     loop do
-      find_npc(@rooms, @npc)
-      # A give that missed the taskmaster leaves the item in hand; reuse it
-      # rather than fetching another one from the bag.
-      unless DRCI.in_hands?(item) || DRCI.get_item?(item, @bag)
-        exit
-      end
-      case DRC.bput("give my #{item} to #{@npc}", "more .* needed", "hands you a", "What is it you're trying to give")
-      when /hands you a/
-        break
-      when /What is it you're trying to give/
-        # The taskmaster wandered off between the get and the give.
-        misses += 1
-        if misses >= MAX_GIVE_MISSES
-          DRC.message("Could not hand a #{item} to #{@npc} after #{misses} tries, stopping.")
-          exit
-        end
-      else
-        misses = 0
-      end
+      reply = give_item(item)
+      exit unless reply
+      break if reply =~ /hands you a/
     end
     sort_sack(item)
     fput('dump junk')
