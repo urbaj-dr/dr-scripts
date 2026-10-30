@@ -3151,8 +3151,8 @@ aesthene_lock_answers: []
 
 #kiosk.lic settings
 kiosk_settings:
-  # Optional. Where you get your coins to load the kiosk. If not specified, it will choose the bank closest to your kiosk.
-  bank_town:
+  # Where you get your coins to load the kiosk. This is mandatory.
+  bank_town: Crossing
   # Room number where you want your kiosk
   cast_room: 4652
   # What noun your kiosk uses (probably "kiosk" unless you've had it customized)
