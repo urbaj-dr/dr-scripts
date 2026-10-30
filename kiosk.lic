@@ -76,7 +76,7 @@ class Kiosk
     # and require_my_kiosk exits cleanly instead of the caller sending commands at it.
     kiosks.find do |kiosk|
       result = DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of')
-      next false if result.include?('not the owner')
+      next false unless result.start_with?('It is now set to pay out')
 
       DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales')
       true
@@ -156,6 +156,11 @@ class Kiosk
         # Our ordinal shifted; re-find the kiosk and retry the same step.
         @my_kiosk = require_my_kiosk(true)
         next
+      end
+
+      if result.empty?
+        DRC.message("kiosk: #{@my_kiosk} didn't answer #{verb.upcase}, so I'm leaving the markup at #{current_markup}%.")
+        return
       end
 
       current_markup = result.match(/set to (-?\d+)%/)[1].to_i
@@ -345,6 +350,10 @@ class Kiosk
           @my_kiosk = require_my_kiosk(true)
           return withdraw_kiosk(pouch_amount, bundle_amount)
         end
+        if result.empty?
+          DRC.message("kiosk: #{@my_kiosk} didn't answer RUB, so I'm not collecting sales this run.")
+          return
+        end
       end
 
       pouch_amount = 0
@@ -359,6 +368,10 @@ class Kiosk
         if result == "As you are not the owner of a"
           @my_kiosk = require_my_kiosk(true)
           return withdraw_kiosk(pouch_amount, bundle_amount)
+        end
+        if result.empty?
+          DRC.message("kiosk: #{@my_kiosk} didn't answer RUB, so I'm not collecting sales this run.")
+          return
         end
       end
       DRC.bput("tap #{@my_kiosk}", 'been processed and recorded to your tessera-ledger')
