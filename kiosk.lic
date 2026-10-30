@@ -19,12 +19,18 @@ class Kiosk
 
     create_kiosk
     report = gather_report
+    ensure_markup(report['markup'])
     refill_kiosk(report['on_hand_amount'])
     withdraw_kiosk(report['pouch_amount'], report['bundle_amount'])
 
     DRCI.put_away_item?(@tessera)
   end
 
+  # Rooms can have multiple kiosks. Kiosks can only be interacted with via ordinal + noun.
+  # As kiosks are created and destroyed, our kiosk's ordinal can change.
+  # The room description (DRRoom.room_objs) contains non-unique long names (eg, "heptagonally symmetrical crystalline kiosk"). Our kiosk's long name is revealed on cast.
+  # We reduce the RT-intensive search for our kiosk by limiting it to only the kiosks matching our long name.
+  # If the kiosk Item ID is ever revealed in the future, this can be massively simplified.
   # Rooms can have multiple kiosks. Kiosks can only be interacted with via ordinal + noun.
   # As kiosks are created and destroyed, our kiosk's ordinal can change.
   # The room description (DRRoom.room_objs) contains non-unique long names (eg, "heptagonally symmetrical crystalline kiosk"). Our kiosk's long name is revealed on cast.
@@ -38,6 +44,7 @@ class Kiosk
     end
 
     return @my_kiosk if @my_kiosk && !force
+
     create_kiosk unless DRSpells.active_spells['Prosperity in Absentia']
 
     DRCT.walk_to(@kiosk_room)
@@ -61,9 +68,26 @@ class Kiosk
                           .map { |_room_i, ord_i| "#{$ORDINALS[ord_i]} #{@kiosk_noun}" }
 
     echo "kiosks in room: #{kiosks}" if @debug
-    return kiosks.first if kiosks.size == 1
 
-    kiosks.find { |kiosk| DRC.bput("study #{kiosk}", 'As you examine your ', 'As you are not the owner of') =~ /As you examine your/ }
+    # RUB has no roundtime (STUDY does) and answers the ownership question.
+    # It toggles the payout mode between pouch and bundle, so rub again on our kiosk to restore it.
+    kiosks.find do |kiosk|
+      result = DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of')
+      next false if result.include?('not the owner')
+
+      DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales')
+      true
+    end
+  end
+
+  # identify_my_kiosk, but not finding a kiosk is fatal. Otherwise callers send
+  # a bare "poke " / "rub ", or keep retrying against someone else's kiosk.
+  def require_my_kiosk(force = false)
+    kiosk = identify_my_kiosk(force)
+    return kiosk if kiosk
+
+    DRC.message("kiosk: Unable to identify my kiosk in room #{@kiosk_room}. Check cast_room, or release PRIA and rerun.")
+    exit
   end
 
   def create_kiosk
@@ -95,46 +119,43 @@ class Kiosk
       DRC.message("kiosk: Unable to cast Prosperity in Absentia. Ensure that you have a 'kiosk' waggle defined containing PRIA, and that you can cast it reliably.")
       exit
     end
+  end
 
-    if @kiosk_settings['markup']
-      kiosk_markup = 0
-      @my_kiosk = identify_my_kiosk
+  # The markup the YAML asks for: accepts .6 or 60, rounds down to a multiple of 5, clamps to -10..80.
+  def target_markup
+    target = @kiosk_settings['markup'].to_f
+    target *= 100 if target.abs < 1 # If the player provided .6 instead of 60, convert it
+    target = (target / 5.0).floor * 5 # Round down to a multiple of 5
+    target.clamp(-10, 80) # Must be between -10 and 80
+  end
 
-      unless @my_kiosk
-        DRC.message("kiosk: Unable to identify my kiosk.")
-        exit
+  # current_markup comes from the tessera report, so checking it costs no roundtime.
+  def ensure_markup(current_markup)
+    return unless @kiosk_settings['markup']
+
+    if current_markup.nil?
+      DRC.message("kiosk: Couldn't read the markup from the report, so I'm leaving it alone.")
+      return
+    end
+
+    target = target_markup
+    echo "ensure_markup: current=#{current_markup}, target=#{target}" if @debug
+    return if current_markup == target
+
+    DRCT.walk_to(@kiosk_room)
+    @my_kiosk ||= require_my_kiosk
+
+    until current_markup == target
+      verb = current_markup < target ? 'pull' : 'push'
+      result = DRC.bput("#{verb} #{@my_kiosk}", /set to -?\d+%/, 'As you are not the owner of a')
+
+      if result == 'As you are not the owner of a'
+        # Our ordinal shifted; re-find the kiosk and retry the same step.
+        @my_kiosk = require_my_kiosk(true)
+        next
       end
 
-      if cast_type == 'refresh'
-        result = DRC.bput("study #{@my_kiosk}", /The markup is set to -?\d+%/)
-        kiosk_markup = result.match(/set to (?<kiosk_markup>-?\d+)%/)[:kiosk_markup].to_f
-      end
-
-      target_markup = @kiosk_settings['markup'].to_f
-      target_markup *= 100 if target_markup.abs < 1 # If the player provided .6 instead of 60, convert it
-      target_markup = (target_markup / 5.0).floor * 5 # Round down to a multiple of 5
-      target_markup = target_markup.clamp(-10, 80) # Must be between -10 and 80
-
-      until kiosk_markup == target_markup
-        if kiosk_markup < target_markup
-          result = DRC.bput("pull #{@my_kiosk}", /set to -?\d+%/, 'As you are not the owner of a')
-        else
-          result = DRC.bput("push #{@my_kiosk}", /set to -?\d+%/, 'As you are not the owner of a')
-        end
-
-        if result == "As you are not the owner of a"
-          # Our ordinal shifted; re-find the kiosk and retry the same step.
-          # kiosk_markup is still accurate since the failed attempt changed nothing.
-          @my_kiosk = identify_my_kiosk(true)
-          unless @my_kiosk
-            DRC.message("kiosk: Cannot locate kiosk")
-            exit
-          end
-          next
-        end
-
-        kiosk_markup = result.match(/set to (?<kiosk_markup>-?\d+)%/)[:kiosk_markup].to_i
-      end
+      current_markup = result.match(/set to (-?\d+)%/)[1].to_i
     end
   end
 
@@ -154,7 +175,7 @@ class Kiosk
     waitrt?
     report = Lich::Util.issue_command(
       "ask my #{@tessera} about report",
-      /current asset holdings are:$/,
+      /key sales data:$/,
       /The floating data fades with a friendly chime/,
       usexml: false
     )
@@ -173,20 +194,24 @@ class Kiosk
 
     echo "report: #{report.inspect}" if @debug
 
-    on_hand_line = report.find { |line| line.include?('Kronars on hand') }
-    pouch_line = report.find { |line| line.include?('Kronars in pouches') }
-    bundle_line = report.find { |line| line.include?('Kronars in bundles') }
+    # The session-purchases section also has "Kronars in pouches/bundles" lines
+    # ("No Kronars in pouches."), so take the last match: the holdings section.
+    on_hand_line = report.reverse.find { |line| line.include?('Kronars on hand') }
+    pouch_line = report.reverse.find { |line| line.include?('Kronars in pouches') }
+    bundle_line = report.reverse.find { |line| line.include?('Kronars in bundles') }
+    markup = report.join("\n")[/markup is set to (-?\d+)%/, 1]&.to_i
 
     total_on_hand = parse_coins(on_hand_line)
     total_pouches = parse_coins(pouch_line)
     total_bundles = parse_coins(bundle_line)
 
-    echo "parsed: on_hand=#{total_on_hand}, pouches=#{total_pouches}, bundles=#{total_bundles}" if @debug
+    echo "parsed: on_hand=#{total_on_hand}, pouches=#{total_pouches}, bundles=#{total_bundles}, markup=#{markup.inspect}" if @debug
 
     return {
       'on_hand_amount' => total_on_hand,
       'pouch_amount'   => total_pouches,
-      'bundle_amount'  => total_bundles
+      'bundle_amount'  => total_bundles,
+      'markup'         => markup
     }
   end
 
@@ -277,19 +302,23 @@ class Kiosk
 
     DRCT.walk_to(closest_bank['id'])
 
-    exchange_result = DRC.bput(
-      "exchange all #{closest_bank['currency']} for Kronars",
-      'After figuring a trivial fee',
-      'The money-changer says',
-      'After collecting a modest fee',
-      "You don't have that many"
-    )
+    # Exchange only what we withdrew, so any lirums/dokoras already carried aren't swept up (and charged a fee).
+    withdrawals.each do |amount_as_string|
+      result = DRC.bput(
+        "exchange #{amount_as_string} #{closest_bank['currency']} to Kronars",
+        'After figuring a trivial fee',
+        'The money-changer says',
+        'After collecting a modest fee',
+        "You don't have that many"
+      )
 
-    case exchange_result
-    when "You don't have that many"
-      DRC.message("Kiosk: You're out of money.")
-      exit
+      if result == "You don't have that many"
+        DRC.message("Kiosk: You're out of money.")
+        exit
+      end
     end
+
+    true
   end
 
   def refill_kiosk(on_hand)
@@ -297,15 +326,18 @@ class Kiosk
     return if on_hand >= @kiosk_settings['minimum_refill']
 
     refill_amount = @kiosk_settings['target_deposit'] - on_hand
-    ensure_kronars_on_hand(refill_amount)
+    unless ensure_kronars_on_hand(refill_amount)
+      DRC.message("kiosk: Couldn't get enough Kronars to refill the kiosk. Check your bank balance and account.")
+      return
+    end
 
     DRCT.walk_to(@kiosk_room)
-    @my_kiosk ||= identify_my_kiosk
+    @my_kiosk ||= require_my_kiosk
     2.times do
       result = DRC.bput("poke #{@my_kiosk}", 'The tessera swiftly rearranges', 'pulses with soft light and chimes merrily', 'As you are not the owner of a')
 
       if result == "As you are not the owner of a"
-        @my_kiosk = identify_my_kiosk(true)
+        @my_kiosk = require_my_kiosk(true)
         return refill_kiosk(on_hand)
       end
     end
@@ -322,14 +354,14 @@ class Kiosk
                   bundle_amount >= @kiosk_settings['minimum_bundle_withdrawal']
 
     DRCT.walk_to(@kiosk_room)
-    @my_kiosk ||= identify_my_kiosk
+    @my_kiosk ||= require_my_kiosk
 
     if pouch_amount >= @kiosk_settings['minimum_pouch_withdrawal']
       result = ''
       until result.include?('pouch')
         result = DRC.bput("rub #{@my_kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of a')
         if result == "As you are not the owner of a"
-          @my_kiosk = identify_my_kiosk(true)
+          @my_kiosk = require_my_kiosk(true)
           return withdraw_kiosk(pouch_amount, bundle_amount)
         end
       end
@@ -344,7 +376,7 @@ class Kiosk
       until result.include?('bundle')
         result = DRC.bput("rub #{@my_kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of a')
         if result == "As you are not the owner of a"
-          @my_kiosk = identify_my_kiosk(true)
+          @my_kiosk = require_my_kiosk(true)
           return withdraw_kiosk(pouch_amount, bundle_amount)
         end
       end
