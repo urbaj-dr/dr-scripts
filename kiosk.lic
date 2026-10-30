@@ -8,6 +8,12 @@ class Kiosk
     @settings = get_settings
     @town_data = get_data('town')
     @kiosk_settings = @settings.kiosk_settings
+
+    if @kiosk_settings['bank_town'].to_s.strip.empty?
+      DRC.message("kiosk: kiosk_settings bank_town is required. Set it to the town whose bank holds the money used to refill your kiosk (e.g. Crossing).")
+      exit
+    end
+
     @debug = @kiosk_settings['debug']
     @kiosk_room = @kiosk_settings['cast_room']
     @kiosk_noun = @kiosk_settings['kiosk_noun'] || "kiosk" # Kiosks, including the noun, can be altered
@@ -26,11 +32,6 @@ class Kiosk
     DRCI.put_away_item?(@tessera)
   end
 
-  # Rooms can have multiple kiosks. Kiosks can only be interacted with via ordinal + noun.
-  # As kiosks are created and destroyed, our kiosk's ordinal can change.
-  # The room description (DRRoom.room_objs) contains non-unique long names (eg, "heptagonally symmetrical crystalline kiosk"). Our kiosk's long name is revealed on cast.
-  # We reduce the RT-intensive search for our kiosk by limiting it to only the kiosks matching our long name.
-  # If the kiosk Item ID is ever revealed in the future, this can be massively simplified.
   # Rooms can have multiple kiosks. Kiosks can only be interacted with via ordinal + noun.
   # As kiosks are created and destroyed, our kiosk's ordinal can change.
   # The room description (DRRoom.room_objs) contains non-unique long names (eg, "heptagonally symmetrical crystalline kiosk"). Our kiosk's long name is revealed on cast.
@@ -71,6 +72,8 @@ class Kiosk
 
     # RUB has no roundtime (STUDY does) and answers the ownership question.
     # It toggles the payout mode between pouch and bundle, so rub again on our kiosk to restore it.
+    # Every candidate is probed, including a lone match, so a foreign kiosk is caught here
+    # and require_my_kiosk exits cleanly instead of the caller sending commands at it.
     kiosks.find do |kiosk|
       result = DRC.bput("rub #{kiosk}", 'It is now set to pay out pouch sales', 'It is now set to pay out bundle sales', 'As you are not the owner of')
       next false if result.include?('not the owner')
@@ -215,38 +218,16 @@ class Kiosk
     }
   end
 
-  # Basically DRCT.sort_destinations, but forcing @kiosk_room instead of current
-  def sort_destinations_from_kiosk(target_list)
-    target_list = target_list.collect(&:to_i)
-    _previous, shortest_distances = Map.dijkstra(@kiosk_room)
-    # Pathfinding failed; hand back what was asked for rather than nothing.
-    return target_list if shortest_distances.nil?
-
-    target_list.delete_if { |room_num| shortest_distances[room_num].nil? && room_num != Room.current.id }
-    # The current room is kept above even without a distance, so sort on a
-    # fallback rather than handing nil to the comparator. dijkstra seeds the
-    # source at 0, so this is defensive rather than a live case.
-    target_list.sort_by { |room_num| shortest_distances[room_num] || Float::INFINITY }
-  end
-
-  # The bank to fund the kiosk from: kiosk_settings' bank_town if set (e.g.
-  # Crossing), otherwise the one with an exchange nearest the kiosk.
+  # The bank to fund the kiosk from: kiosk_settings' bank_town
   def find_kiosk_bank
     echo "find_kiosk_bank" if @debug
 
-    override = @kiosk_settings['bank_town'].to_s.strip
-
-    if override.empty?
-      towns      = @town_data.to_h.select { |_name, data| data['exchange'] }
-      closest_id = sort_destinations_from_kiosk(towns.map { |_name, data| data['exchange']['id'] }).first
-      town_name, town = towns.find { |_name, data| data['exchange']['id'] == closest_id }
-    else
-      town_name = DRC.get_town_name(override) || override
-      town      = @town_data[town_name]
-      unless town
-        DRC.message("kiosk: bank_town '#{override}' isn't a recognized town.")
-        exit
-      end
+    name      = @kiosk_settings['bank_town'].to_s.strip
+    town_name = DRC.get_town_name(name) || name
+    town      = @town_data[town_name]
+    unless town
+      DRC.message("kiosk: bank_town '#{name}' isn't a recognized town.")
+      exit
     end
 
     {
@@ -258,27 +239,27 @@ class Kiosk
   end
 
   # Special handling is required to ensure that we're using Kronars, even if our hometown uses another currency.
-  # This logic will use either your specified bank, or the bank nearest to your kiosk to get your Kronars.
+  # This logic uses the bank in your bank_town setting to get your Kronars.
   def ensure_kronars_on_hand(target_amt)
     echo "ensure_kronars_on_hand: #{target_amt}" if @debug
     current_k = DRCM.check_wealth('Kronars')
     return true if current_k >= target_amt
 
-    closest_bank = find_kiosk_bank
-    echo "Closest bank: #{closest_bank}" if @debug
+    bank = find_kiosk_bank
+    echo "Bank: #{bank}" if @debug
 
-    if closest_bank['currency'] == 'kronars'
+    if bank['currency'] == 'kronars'
       echo "Using standard DRCM method" if @debug
-      return DRCM.ensure_copper_on_hand(target_amt, @settings, closest_bank['town'])
+      return DRCM.ensure_copper_on_hand(target_amt, @settings, bank['town'])
     end
 
     needed = target_amt - current_k
 
     withdraw_amt_copper = DRCM.convert_currency(
       needed,
-      closest_bank['currency'],
+      bank['currency'],
       'kronars',
-      -closest_bank['fee']
+      -bank['fee']
     )
 
     # Extract platinum and lump the rest as copper to avoid conversion issues with small amounts, while minimizing burden
@@ -289,9 +270,9 @@ class Kiosk
     withdrawals << "#{platinum_amt} platinum" if platinum_amt > 0
     withdrawals << "#{copper_amt} copper" if copper_amt > 0
 
-    bank_town = closest_bank['town']
+    bank_town = bank['town']
     success = withdrawals.all? do |amount_as_string|
-      formatted_withdrawal = "#{amount_as_string} #{closest_bank['currency']}"
+      formatted_withdrawal = "#{amount_as_string} #{bank['currency']}"
       DRCM.withdraw_exact_amount?(formatted_withdrawal, @settings, bank_town)
     end
 
@@ -300,12 +281,12 @@ class Kiosk
       exit
     end
 
-    DRCT.walk_to(closest_bank['id'])
+    DRCT.walk_to(bank['id'])
 
     # Exchange only what we withdrew, so any lirums/dokoras already carried aren't swept up (and charged a fee).
     withdrawals.each do |amount_as_string|
       result = DRC.bput(
-        "exchange #{amount_as_string} #{closest_bank['currency']} to Kronars",
+        "exchange #{amount_as_string} #{bank['currency']} to Kronars",
         'After figuring a trivial fee',
         'The money-changer says',
         'After collecting a modest fee',
@@ -327,7 +308,7 @@ class Kiosk
 
     refill_amount = @kiosk_settings['target_deposit'] - on_hand
     unless ensure_kronars_on_hand(refill_amount)
-      DRC.message("kiosk: Couldn't get enough Kronars to refill the kiosk. Check your bank balance and account.")
+      DRC.message("kiosk: Couldn't get enough Kronars to refill the kiosk. Check your account balance in #{@kiosk_settings['bank_town']}, or change bank_town.")
       return
     end
 
