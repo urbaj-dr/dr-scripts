@@ -21,29 +21,38 @@ KIOSK_PRIA_CAST_MESSAGE =
   'of shattering glass and a hiss of displaced air, a jaggedly dendritic crystalline kiosk ' \
   'unfolds from nothingness.'
 
-# The other replies below are shaped to the phrases kiosk.lic matches, not
-# copied from a log. Each keeps the matched phrase intact and adds the kind of
+# Verbatim from urbaj-dr's in-game transcripts on PR #7832
+# (https://github.com/elanthia-online/dr-scripts/pull/7832#issuecomment-6525700418).
+# The PERCEIVE line carries the game's current "Properity in Abstentia" typo.
+KIOSK_REFRESH_MESSAGE = 'You gesture at a vitreous crystalline kiosk, which responds by briefly undulating with green-orange hues as the spell pattern is refreshed.'
+KIOSK_PERCEIVE_MESSAGE = 'You sense your Properity in Abstentia spell within a monoclinic crystalline kiosk, which will last for about seven anlaen.  ' \
+                         "It is deployed at [Grisgonda's, Appraisal Room], and has coin reserves."
+
+# The tessera report from the same transcripts, as Lich::Util.issue_command
+# returns it: from the line matching the start pattern through the end line.
+# The markup line sits in the session section, and "Kronars in pouches/bundles"
+# appear in both sections; the holdings are the second set.
+KIOSK_REPORT = [
+  'A flurry of glimmering geometries and abstract ratios flit across your field of view, describing key sales data:',
+  "The crystalline kiosk is presently located at [Grisgonda's, Appraisal Room].",
+  "During this kiosk's trading session, it has purchased the following:",
+  '  No Kronars in pouches.',
+  '  No Kronars in bundles.',
+  '  The markup is set to 55%.',
+  "Finally, your kiosk's current asset holdings are:",
+  '  It has a total of 575 platinum, 8 gold, 8 silver, 5 bronze, and 5 copper Kronars on hand for purchases.',
+  '  77 platinum, 6 gold, 8 silver, 5 bronze, and 3 copper Kronars in pouches.',
+  '  No Kronars in bundles.',
+  'The floating data fades with a friendly chime, leaving you blinking away a brief visual afterglow.'
+].freeze
+
+# The replies below are shaped to the phrases kiosk.lic matches, not copied
+# from a log. Each keeps the matched phrase intact and adds the kind of
 # surrounding text the game sends, so a too-loose or too-tight pattern shows.
 KIOSK_NOT_OWNER = 'As you are not the owner of a jaggedly dendritic crystalline kiosk, you cannot do that.'
 KIOSK_RUB_TO_POUCH = 'You rub the kiosk.  It is now set to pay out pouch sales.'
 KIOSK_RUB_TO_BUNDLE = 'You rub the kiosk.  It is now set to pay out bundle sales.'
 KIOSK_NOT_FOUND = 'I could not find what you were referring to.'
-
-# A tessera report shaped to what gather_report reads: the start and end lines
-# it captures between, a session-purchases section whose "No Kronars in ..."
-# lines must be skipped, then the holdings section and the markup line.
-KIOSK_REPORT = [
-  'You ask your tessera about report.  It projects a shimmering summary of key sales data:',
-  '  Purchases this session:',
-  '    No Kronars in pouches.',
-  '    No Kronars in bundles.',
-  '  Your current asset holdings are:',
-  '    Kronars on hand: 412 platinum, 5 gold, 3 silver, 2 bronze and 7 copper Kronars.',
-  '    Kronars in pouches: 1,250 platinum Kronars.',
-  '    Kronars in bundles: 60 platinum and 4 gold Kronars.',
-  '  The markup is set to 15%.',
-  'The floating data fades with a friendly chime.'
-].freeze
 
 # kiosk_settings as profiles/base.yaml ships them. Profiles carry !ruby/regexp
 # tags, so they load permissively, as the profile loader does.
@@ -213,16 +222,21 @@ RSpec.describe Kiosk do
         expect(matcher.match(KIOSK_PRIA_CAST_MESSAGE)[1]).to eq('jaggedly dendritic crystalline kiosk')
       end
 
-      it 'captures the long name from a refresh cast' do
-        line = 'You gesture at a jaggedly dendritic crystalline kiosk, which responds by briefly undulating.'
-        expect(matcher.match(line)[2]).to eq('jaggedly dendritic crystalline kiosk')
+      it 'captures the long name from the real refresh message' do
+        expect(matcher.match(KIOSK_REFRESH_MESSAGE)[2]).to eq('vitreous crystalline kiosk')
       end
 
-      it 'captures the long name from PERCEIVE, including the "Properity in Abstentia" typo' do
-        ['Prosperity in Absentia', 'Properity in Abstentia'].each do |spelling|
-          line = "You sense your #{spelling} spell within a heptagonally symmetrical crystalline kiosk, which has 97 roisaen left."
-          expect(matcher.match(line)[3]).to eq('heptagonally symmetrical crystalline kiosk')
-        end
+      it 'captures the long name from the real PERCEIVE line, typo and all' do
+        expect(matcher.match(KIOSK_PERCEIVE_MESSAGE)[3]).to eq('monoclinic crystalline kiosk')
+      end
+
+      it 'still captures it once the game corrects the spell name' do
+        corrected = KIOSK_PERCEIVE_MESSAGE.sub('Properity in Abstentia', 'Prosperity in Absentia')
+        expect(matcher.match(corrected)[3]).to eq('monoclinic crystalline kiosk')
+      end
+
+      it "stops the PERCEIVE capture at the kiosk, not at the deployment room's comma" do
+        expect(matcher.match(KIOSK_PERCEIVE_MESSAGE)[3]).not_to include('Grisgonda')
       end
 
       it 'keeps an "and" inside the long name, for identify_my_kiosk to trim' do
@@ -583,13 +597,13 @@ RSpec.describe Kiosk do
 
     before { real_coin_values }
 
-    it 'adds every denomination into coppers' do
-      line = 'Kronars on hand: 412 platinum, 5 gold, 3 silver, 2 bronze and 7 copper Kronars.'
-      expect(kiosk.parse_coins(line)).to eq(4_125_327)
+    it 'adds every denomination of the real on-hand line into coppers' do
+      line = '  It has a total of 575 platinum, 8 gold, 8 silver, 5 bronze, and 5 copper Kronars on hand for purchases.'
+      expect(kiosk.parse_coins(line)).to eq(5_758_855)
     end
 
     it 'reads amounts with thousands separators' do
-      expect(kiosk.parse_coins('Kronars in pouches: 1,250 platinum Kronars.')).to eq(12_500_000)
+      expect(kiosk.parse_coins('  1,250 platinum, 6 gold, 8 silver, 5 bronze, and 3 copper Kronars in pouches.')).to eq(12_506_853)
     end
 
     it 'ignores case in the denomination' do
@@ -632,18 +646,18 @@ RSpec.describe Kiosk do
 
     it 'reads holdings from the holdings section, not the session purchases above it' do
       expect(kiosk.gather_report).to include(
-        'on_hand_amount' => 4_125_327,
-        'pouch_amount'   => 12_500_000,
-        'bundle_amount'  => 604_000
+        'on_hand_amount' => 5_758_855,
+        'pouch_amount'   => 776_853,
+        'bundle_amount'  => 0
       )
     end
 
     it 'reads the markup as an Integer' do
-      expect(kiosk.gather_report['markup']).to eq(15)
+      expect(kiosk.gather_report['markup']).to eq(55)
     end
 
     it 'reads a negative markup' do
-      report = KIOSK_REPORT.map { |line| line.sub('set to 15%', 'set to -10%') }
+      report = KIOSK_REPORT.map { |line| line.sub('set to 55%', 'set to -10%') }
       allow(Lich::Util).to receive(:issue_command).and_return(report)
       expect(kiosk.gather_report['markup']).to eq(-10)
     end
@@ -653,10 +667,11 @@ RSpec.describe Kiosk do
       expect(kiosk.gather_report['markup']).to be_nil
     end
 
-    it 'counts empty holdings as zero' do
-      report = KIOSK_REPORT.map { |line| line.sub(/Kronars in bundles: .*/, 'No Kronars in bundles.') }
+    it 'reads the bundle holdings, not the empty session line above them' do
+      report = KIOSK_REPORT.dup
+      report[report.rindex('  No Kronars in bundles.')] = '  60 platinum, 4 gold, 2 silver, 1 bronze, and 9 copper Kronars in bundles.'
       allow(Lich::Util).to receive(:issue_command).and_return(report)
-      expect(kiosk.gather_report['bundle_amount']).to eq(0)
+      expect(kiosk.gather_report['bundle_amount']).to eq(604_219)
     end
 
     context 'when the tessera gives no report' do
@@ -666,7 +681,7 @@ RSpec.describe Kiosk do
         allow(Lich::Util).to receive(:issue_command).and_return([], KIOSK_REPORT.dup)
         expect(kiosk).to receive(:create_kiosk).once
 
-        expect(kiosk.gather_report['markup']).to eq(15)
+        expect(kiosk.gather_report['markup']).to eq(55)
         expect(fput_commands).to eq(['release PRIA', 'perceive self'])
       end
 
