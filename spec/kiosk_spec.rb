@@ -170,11 +170,17 @@ RSpec.describe Kiosk do
       $test_data = OpenStruct.new(town: town_data)
     end
 
+    # The blocks #initialize registers with before_dying.
+    let(:exit_hooks) { [] }
+
     # Runs #initialize with the five steps stubbed, so only its own logic runs.
+    # before_dying is captured on the instance, since a spec elsewhere redefines
+    # the top-level one.
     #
     # @return [Kiosk]
     def run_initialize
       instance = Kiosk.allocate
+      allow(instance).to receive(:before_dying) { |&hook| exit_hooks << hook }
       %i[create_kiosk ensure_markup refill_kiosk withdraw_kiosk].each { |step| allow(instance).to receive(step) }
       allow(instance).to receive(:gather_report).and_return(report)
       instance.send(:initialize)
@@ -205,6 +211,47 @@ RSpec.describe Kiosk do
       expect(DRCI).to receive(:put_away_item?).with('tessera').ordered
 
       instance.send(:initialize)
+    end
+
+    it 'exits naming every setting a partial kiosk_settings block leaves out' do
+      # A kiosk_settings block in a character file replaces base.yaml's whole block.
+      settings.kiosk_settings = { 'bank_town' => 'Crossing', 'markup' => 20 }
+      expect(DRC).to receive(:message)
+        .with(/missing cast_room, target_deposit, minimum_refill, minimum_pouch_withdrawal, minimum_bundle_withdrawal/)
+      expect { run_initialize }.to raise_error(SystemExit)
+    end
+
+    it 'accepts a block that leaves out only the optional settings' do
+      %w[markup debug kiosk_noun].each { |optional| kiosk_settings.delete(optional) }
+      expect { run_initialize }.not_to raise_error
+    end
+
+    it 'exits with the bank_town message when kiosk_settings is empty' do
+      settings.kiosk_settings = nil
+      expect(DRC).to receive(:message).with(/bank_town is required/)
+      expect { run_initialize }.to raise_error(SystemExit)
+    end
+
+    describe 'cleanup when the script ends' do
+      it 'puts the tessera away if it is still in hand, e.g. after an early exit' do
+        run_initialize
+        allow(DRCI).to receive(:in_hands?).with('tessera').and_return(true)
+        expect(DRCI).to receive(:put_away_item?).with('tessera')
+        exit_hooks.each(&:call)
+      end
+
+      it 'leaves the tessera alone once it has been put away' do
+        run_initialize
+        allow(DRCI).to receive(:in_hands?).with('tessera').and_return(false)
+        expect(DRCI).not_to receive(:put_away_item?)
+        exit_hooks.each(&:call)
+      end
+
+      it 'removes the kiosk-desc flag' do
+        run_initialize
+        exit_hooks.each(&:call)
+        expect(Flags.matchers).not_to have_key('kiosk-desc')
+      end
     end
 
     it 'falls back to the noun "kiosk" when kiosk_noun is unset' do
@@ -384,6 +431,25 @@ RSpec.describe Kiosk do
 
     # Without the guard this loops for good under Lich: its NilClass patch turns
     # the failed match into nil, nil[1] into nil and nil.to_i into 0.
+    it 'stops when the markup stops moving, e.g. at a cap below the target' do
+      kiosk_settings['markup'] = 80
+      game_replies { |_command| 'The markup is now set to 50%.' }
+      expect(DRC).to receive(:message).with(/went from 50% to 50% instead of toward 80%/)
+      kiosk.ensure_markup(45)
+      expect(commands).to eq(['pull first kiosk', 'pull first kiosk'])
+    end
+
+    it 'stops instead of see-sawing when a step overshoots the target' do
+      markup = 20
+      game_replies do |command|
+        markup += command.start_with?('pull') ? 10 : -10
+        "The markup is now set to #{markup}%."
+      end
+      expect(DRC).to receive(:message).with(/went from 20% to 30% instead of toward 25%/)
+      kiosk.ensure_markup(20)
+      expect(commands).to eq(['pull first kiosk'])
+    end
+
     it 'stops with a message when the kiosk stops answering (e.g. it expired mid-run)' do
       game_replies { |_command| KIOSK_NOT_FOUND }
       expect(DRC).to receive(:message).with(/didn't answer PULL, so I'm leaving the markup at 20%/)
@@ -562,6 +628,20 @@ RSpec.describe Kiosk do
       expect(kiosk.instance_variable_get(:@my_kiosk)).to be_nil
     end
 
+    it "forgets the old kiosk's long name on a new cast, so a missed announcement can't hide the new one" do
+      pria_active(nil)
+      SessionVars.kiosk_name = 'vitreous crystalline kiosk'
+      kiosk.create_kiosk
+      expect(SessionVars.kiosk_name).to be_nil
+    end
+
+    it 'keeps the long name on a refresh, which is the same kiosk' do
+      pria_active(1)
+      SessionVars.kiosk_name = 'vitreous crystalline kiosk'
+      kiosk.create_kiosk
+      expect(SessionVars.kiosk_name).to eq('vitreous crystalline kiosk')
+    end
+
     it 'recasts after a failed attempt even with PRIA up' do
       failed = build_kiosk(failed_attempt: true)
       expect(DRCA).to receive(:do_buffs)
@@ -639,7 +719,7 @@ RSpec.describe Kiosk do
     end
 
     it 'gets the tessera in hand first' do
-      expect(DRCI).to receive(:get_item_if_not_held?).with('tessera').ordered
+      expect(DRCI).to receive(:get_item_if_not_held?).with('tessera').ordered.and_return(true)
       expect(Lich::Util).to receive(:issue_command).ordered.and_return(KIOSK_REPORT.dup)
       kiosk.gather_report
     end
@@ -674,23 +754,45 @@ RSpec.describe Kiosk do
       expect(kiosk.gather_report['bundle_amount']).to eq(604_219)
     end
 
+    it "exits without asking when the tessera can't be got in hand" do
+      allow(DRCI).to receive(:get_item_if_not_held?).with('tessera').and_return(false)
+      expect(DRC).to receive(:message).with(/Couldn't get your tessera in hand/)
+      expect(Lich::Util).not_to receive(:issue_command)
+      expect { kiosk.gather_report }.to raise_error(SystemExit)
+    end
+
     context 'when the tessera gives no report' do
       before { allow(kiosk).to receive(:create_kiosk) }
 
-      it 'releases PRIA, recasts, and reads the report from the new kiosk' do
+      it 'asks once more before releasing a working kiosk over one missed reply' do
         allow(Lich::Util).to receive(:issue_command).and_return([], KIOSK_REPORT.dup)
+        expect(kiosk).not_to receive(:create_kiosk)
+
+        expect(kiosk.gather_report['markup']).to eq(55)
+        expect(fput_commands).not_to include('release PRIA')
+      end
+
+      it 'treats a report cut off before its end line as missing, not as an empty kiosk' do
+        allow(Lich::Util).to receive(:issue_command).and_return(KIOSK_REPORT.first(6), KIOSK_REPORT.dup)
+        expect(kiosk.gather_report['on_hand_amount']).to eq(5_758_855)
+        expect(fput_commands).not_to include('release PRIA')
+      end
+
+      it 'releases PRIA and recasts after two missed replies, then reads the new kiosk' do
+        allow(Lich::Util).to receive(:issue_command).and_return([], [], KIOSK_REPORT.dup)
         expect(kiosk).to receive(:create_kiosk).once
 
         expect(kiosk.gather_report['markup']).to eq(55)
         expect(fput_commands).to eq(['release PRIA', 'perceive self'])
       end
 
-      it 'exits after the retry also fails, having released PRIA only once' do
+      it 'exits when the recast kiosk gives no report either, having released PRIA only once' do
         allow(Lich::Util).to receive(:issue_command).and_return([])
         expect(DRC).to receive(:message).with(/Unable to gather a report/)
 
         expect { kiosk.gather_report }.to raise_error(SystemExit)
         expect(fput_commands.count('release PRIA')).to eq(1)
+        expect(Lich::Util).to have_received(:issue_command).exactly(4).times
       end
     end
   end

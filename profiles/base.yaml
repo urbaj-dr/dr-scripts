@@ -3151,7 +3151,7 @@ aesthene_lock_answers: []
 
 #kiosk.lic settings
 kiosk_settings:
-  # Where you get your coins to load the kiosk. This is mandatory.
+  # The town whose bank holds the coins used to refill your kiosk. Must not be blank.
   bank_town: Crossing
   # Room number where you want your kiosk
   cast_room: 4652

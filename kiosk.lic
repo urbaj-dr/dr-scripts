@@ -7,10 +7,18 @@ class Kiosk
 
     @settings = get_settings
     @town_data = get_data('town')
-    @kiosk_settings = @settings.kiosk_settings
+    @kiosk_settings = @settings.kiosk_settings || {}
 
     if @kiosk_settings['bank_town'].to_s.strip.empty?
       DRC.message("kiosk: kiosk_settings bank_town is required. Set it to the town whose bank holds the money used to refill your kiosk (e.g. Crossing).")
+      exit
+    end
+
+    # A kiosk_settings block in a character file replaces base.yaml's whole block
+    # rather than merging into it, so a partial block leaves these unset.
+    missing = %w[cast_room target_deposit minimum_refill minimum_pouch_withdrawal minimum_bundle_withdrawal].select { |key| @kiosk_settings[key].nil? }
+    unless missing.empty?
+      DRC.message("kiosk: kiosk_settings is missing #{missing.join(', ')}. A kiosk_settings block in your character file replaces the whole block from base.yaml, so copy every setting into it.")
       exit
     end
 
@@ -22,6 +30,12 @@ class Kiosk
     Flags.add('kiosk-desc', /, an? (.+?) unfolds from nothingness|You gesture at an? (.+?), which responds by briefly undulating|You sense your Pros?perity in Abst?entia spell within an? (.+), which/) # Watch for the long kiosk name, which is revealed on PRIA casts. Some messaging has had typos ("Properity in Abstentia")
     @failed_attempt = false
     echo @kiosk_settings.to_yaml if @debug
+
+    # Every exit path, not just a clean run, should leave the tessera put away.
+    before_dying do
+      Flags.delete('kiosk-desc')
+      DRCI.put_away_item?(@tessera) if DRCI.in_hands?(@tessera)
+    end
 
     create_kiosk
     report = gather_report
@@ -109,7 +123,12 @@ class Kiosk
     DRCI.get_item_if_not_held?(@tessera)
 
     cast_type = DRSpells.active_spells['Prosperity in Absentia'].nil? ? 'new' : 'refresh'
-    @my_kiosk = nil if cast_type == 'new'
+    if cast_type == 'new'
+      # A new kiosk has a new long name. If the flag misses its announcement,
+      # identify_my_kiosk then probes every kiosk rather than filtering on the old name.
+      @my_kiosk = nil
+      SessionVars.kiosk_name = nil
+    end
     Flags.reset('kiosk-desc')
     echo "cast_type: #{cast_type}" if @debug
 
@@ -163,7 +182,15 @@ class Kiosk
         return
       end
 
-      current_markup = result.match(/set to (-?\d+)%/)[1].to_i
+      new_markup = result.match(/set to (-?\d+)%/)[1].to_i
+      # A cap short of the target repeats the same value, and a step bigger than
+      # 5 can overshoot and see-saw; either way, stop rather than loop.
+      if (new_markup - target).abs >= (current_markup - target).abs
+        DRC.message("kiosk: The markup went from #{current_markup}% to #{new_markup}% instead of toward #{target}%, so I'm leaving it at #{new_markup}%.")
+        return
+      end
+
+      current_markup = new_markup
     end
   end
 
@@ -176,10 +203,10 @@ class Kiosk
     end
   end
 
-  def gather_report
-    echo "gather_report" if @debug
-    DRCI.get_item_if_not_held?(@tessera)
-
+  # The report lines, or [] when the reply didn't arrive in full. issue_command
+  # returns whatever it caught before its timeout, so a report without its end
+  # line is incomplete and would read missing holdings as zero.
+  def ask_for_report
     waitrt?
     report = Lich::Util.issue_command(
       "ask my #{@tessera} about report",
@@ -187,6 +214,19 @@ class Kiosk
       /The floating data fades with a friendly chime/,
       usexml: false
     )
+    report.last.to_s.include?('The floating data fades with a friendly chime') ? report : []
+  end
+
+  def gather_report
+    echo "gather_report" if @debug
+    unless DRCI.get_item_if_not_held?(@tessera)
+      DRC.message("kiosk: Couldn't get your #{@tessera} in hand. Every kiosk command needs it.")
+      exit
+    end
+
+    # One slow or missed reply shouldn't cost a working kiosk, so ask again before releasing it.
+    report = ask_for_report
+    report = ask_for_report if report.empty?
 
     if report.empty?
       if @failed_attempt
@@ -378,10 +418,6 @@ class Kiosk
       DRCI.put_away_item?('bundle', @settings.full_pouch_container)
     end
   end
-end
-
-before_dying do
-  Flags.delete('kiosk-desc')
 end
 
 Kiosk.new
